@@ -30,6 +30,7 @@ async function ensureConfigFile() {
         const defaultConfig = {
             redirectUrl: 'https://example.com/',
             siteName: 'IP Logger',
+            adminPassword: 'admin',
             createdAt: new Date().toISOString()
         };
         await fs.writeFile(CONFIG_FILE, JSON.stringify(defaultConfig, null, 2));
@@ -44,7 +45,8 @@ async function getConfig() {
     } catch {
         return {
             redirectUrl: 'https://example.com/',
-            siteName: 'IP Logger'
+            siteName: 'IP Logger',
+            adminPassword: 'admin'
         };
     }
 }
@@ -219,6 +221,47 @@ app.get('/admin/logs', async (req, res) => {
 
 // Admin dashboard
 app.get('/admin', async (req, res) => {
+    const { password } = req.query;
+    const config = await getConfig();
+    
+    // Check password
+    if (password !== config.adminPassword) {
+        return res.send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Admin Login</title>
+                <meta charset="UTF-8">
+                <style>
+                    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+                    .login-box { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-width: 400px; width: 100%; }
+                    .form-group { margin-bottom: 20px; }
+                    .form-group label { display: block; margin-bottom: 8px; font-weight: 500; }
+                    .form-group input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+                    .btn { background: #667eea; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; font-size: 14px; width: 100%; }
+                    .btn:hover { background: #5a6fd8; }
+                    .error { color: #dc3545; text-align: center; margin-bottom: 20px; }
+                </style>
+            </head>
+            <body>
+                <div class="login-box">
+                    <h2 style="text-align: center; margin-bottom: 30px;">Admin Access</h2>
+                    ${password ? '<div class="error">Invalid password. Please try again.</div>' : ''}
+                    <form method="get">
+                        <div class="form-group">
+                            <label for="password">Password:</label>
+                            <input type="password" id="password" name="password" required autofocus>
+                        </div>
+                        <button type="submit" class="btn">Login</button>
+                    </form>
+                    <p style="text-align: center; margin-top: 20px; color: #666; font-size: 12px;">
+                        Default password: admin
+                    </p>
+                </div>
+            </body>
+            </html>
+        `);
+    }
     const html = `
     <!DOCTYPE html>
     <html>
