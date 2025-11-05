@@ -13,6 +13,14 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname)); // Serve static files
 
+// Simple session storage
+const sessions = new Map();
+
+// Generate session token
+function generateSessionToken() {
+    return Math.random().toString(36).substring(2) + Date.now().toString(36);
+}
+
 // Ensure log file exists
 async function ensureLogFile() {
     try {
@@ -180,6 +188,62 @@ app.delete('/admin/logs', async (req, res) => {
     }
 });
 
+// Login endpoint - create session
+app.post('/admin/login', async (req, res) => {
+    try {
+        const { password } = req.body;
+        const config = await getConfig();
+        
+        if (password === config.adminPassword) {
+            const token = generateSessionToken();
+            sessions.set(token, { 
+                created: Date.now(),
+                lastAccessed: Date.now()
+            });
+            
+            res.json({ success: true, token });
+        } else {
+            res.status(401).json({ success: false, error: 'Invalid password' });
+        }
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ success: false, error: 'Login failed' });
+    }
+});
+
+// Verify session endpoint
+app.get('/admin/verify', (req, res) => {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token || !sessions.has(token)) {
+        return res.status(401).json({ valid: false });
+    }
+    
+    const session = sessions.get(token);
+    const now = Date.now();
+    
+    // Check if session expired (24 hours)
+    if (now - session.created > 24 * 60 * 60 * 1000) {
+        sessions.delete(token);
+        return res.status(401).json({ valid: false, expired: true });
+    }
+    
+    // Update last accessed time
+    session.lastAccessed = now;
+    sessions.set(token, session);
+    
+    res.json({ valid: true });
+});
+
+// Logout endpoint
+app.post('/admin/logout', (req, res) => {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (token && sessions.has(token)) {
+        sessions.delete(token);
+    }
+    res.json({ success: true });
+});
+
 // Get redirect URL for the frontend
 app.get('/api/redirect-url', async (req, res) => {
     try {
@@ -221,47 +285,6 @@ app.get('/admin/logs', async (req, res) => {
 
 // Admin dashboard
 app.get('/admin', async (req, res) => {
-    const { password } = req.query;
-    const config = await getConfig();
-    
-    // Check password
-    if (password !== config.adminPassword) {
-        return res.send(`
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Admin Login</title>
-                <meta charset="UTF-8">
-                <style>
-                    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-                    .login-box { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-width: 400px; width: 100%; }
-                    .form-group { margin-bottom: 20px; }
-                    .form-group label { display: block; margin-bottom: 8px; font-weight: 500; }
-                    .form-group input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-                    .btn { background: #667eea; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; font-size: 14px; width: 100%; }
-                    .btn:hover { background: #5a6fd8; }
-                    .error { color: #dc3545; text-align: center; margin-bottom: 20px; }
-                </style>
-            </head>
-            <body>
-                <div class="login-box">
-                    <h2 style="text-align: center; margin-bottom: 30px;">Admin Access</h2>
-                    ${password ? '<div class="error">Invalid password. Please try again.</div>' : ''}
-                    <form method="get">
-                        <div class="form-group">
-                            <label for="password">Password:</label>
-                            <input type="password" id="password" name="password" required autofocus>
-                        </div>
-                        <button type="submit" class="btn">Login</button>
-                    </form>
-                    <p style="text-align: center; margin-top: 20px; color: #666; font-size: 12px;">
-                        Default password: admin
-                    </p>
-                </div>
-            </body>
-            </html>
-        `);
-    }
     const html = `
     <!DOCTYPE html>
     <html>
@@ -272,6 +295,14 @@ app.get('/admin', async (req, res) => {
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
             .container { max-width: 1200px; margin: 0 auto; }
+            .login-container { max-width: 400px; margin: 100px auto; }
+            .login-box { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-width: 400px; width: 100%; }
+            .form-group { margin-bottom: 20px; }
+            .form-group label { display: block; margin-bottom: 8px; font-weight: 500; }
+            .form-group input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+            .btn { background: #667eea; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+            .btn:hover { background: #5a6fd8; }
+            .error { color: #dc3545; text-align: center; margin-bottom: 20px; }
             .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
             .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
             .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
@@ -296,10 +327,15 @@ app.get('/admin', async (req, res) => {
         <div class="container">
             <div class="header">
                 <h1>Visitor Logs Dashboard</h1>
-                <div style="display: flex; gap: 10px; align-items: center;">
-                    <button class="refresh-btn" onclick="location.reload()">Refresh</button>
-                    <button class="refresh-btn" onclick="clearAllLogs()" style="background: #dc3545;">Clear Logs</button>
-                    <button class="refresh-btn" onclick="toggleConfig()" style="background: #28a745;">Settings</button>
+                <div style="display: flex; gap: 10px; align-items: center; justify-content: space-between;">
+                    <div>
+                        <button class="refresh-btn" onclick="loadLogs()">Refresh</button>
+                        <button class="refresh-btn" onclick="clearAllLogs()" style="background: #dc3545;">Clear Logs</button>
+                        <button class="refresh-btn" onclick="toggleConfig()" style="background: #28a745;">Settings</button>
+                    </div>
+                    <div>
+                        <button class="refresh-btn" onclick="logout()" style="background: #6c757d;">Logout</button>
+                    </div>
                 </div>
             </div>
             
@@ -346,11 +382,132 @@ app.get('/admin', async (req, res) => {
                     <tbody id="logsTable">
                         <tr><td colspan="5">Loading...</td></tr>
                     </tbody>
-                </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Login Panel -->
+        <div id="loginPanel" class="login-container" style="display: none;">
+            <div class="login-box">
+                <h2 style="text-align: center; margin-bottom: 30px;">Admin Login</h2>
+                <div id="loginError" class="error" style="display: none;"></div>
+                <div class="form-group">
+                    <label for="loginPassword">Password:</label>
+                    <input type="password" id="loginPassword" placeholder="Enter admin password" onkeypress="handleLoginKeypress(event)">
+                </div>
+                <button class="btn" onclick="performLogin()" style="width: 100%;">Login</button>
+                <p style="text-align: center; margin-top: 20px; color: #666; font-size: 12px;">
+                    Default password: admin
+                </p>
             </div>
         </div>
 
         <script>
+            let authToken = localStorage.getItem('adminToken');
+            
+            // Check session on page load
+            window.onload = function() {
+                if (authToken) {
+                    verifySession();
+                } else {
+                    showLogin();
+                }
+            };
+            
+            function showLogin() {
+                document.querySelector('.container').style.display = 'none';
+                document.getElementById('loginPanel').style.display = 'block';
+            }
+            
+            function showDashboard() {
+                document.querySelector('.container').style.display = 'block';
+                document.getElementById('loginPanel').style.display = 'none';
+                loadLogs();
+                loadConfig();
+            }
+            
+            function handleLoginKeypress(event) {
+                if (event.key === 'Enter') {
+                    performLogin();
+                }
+            }
+            
+            async function performLogin() {
+                const password = document.getElementById('loginPassword').value;
+                const errorDiv = document.getElementById('loginError');
+                
+                if (!password) {
+                    showError('Please enter a password');
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/admin/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        authToken = result.token;
+                        localStorage.setItem('adminToken', authToken);
+                        showDashboard();
+                    } else {
+                        showError(result.error || 'Login failed');
+                    }
+                } catch (error) {
+                    showError('Connection error. Please try again.');
+                }
+            }
+            
+            async function verifySession() {
+                try {
+                    const response = await fetch('/admin/verify', {
+                        headers: { 'Authorization': 'Bearer ' + authToken }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.valid) {
+                        showDashboard();
+                    } else {
+                        // Session expired or invalid
+                        localStorage.removeItem('adminToken');
+                        authToken = null;
+                        showLogin();
+                        if (result.expired) {
+                            showError('Session expired. Please login again.');
+                        }
+                    }
+                } catch (error) {
+                    localStorage.removeItem('adminToken');
+                    authToken = null;
+                    showLogin();
+                }
+            }
+            
+            function showError(message) {
+                const errorDiv = document.getElementById('loginError');
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+                setTimeout(() => {
+                    errorDiv.style.display = 'none';
+                }, 5000);
+            }
+            
+            function logout() {
+                if (authToken) {
+                    fetch('/admin/logout', {
+                        method: 'POST',
+                        headers: { 'Authorization': 'Bearer ' + authToken }
+                    });
+                }
+                localStorage.removeItem('adminToken');
+                authToken = null;
+                showLogin();
+            }
             let currentConfig = {};
             
             async function loadConfig() {
