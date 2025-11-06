@@ -244,6 +244,44 @@ app.post('/admin/logout', (req, res) => {
     res.json({ success: true });
 });
 
+// Change password endpoint
+app.post('/admin/change-password', async (req, res) => {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    // Verify session
+    if (!token || !sessions.has(token)) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+    }
+    
+    try {
+        const { currentPassword, newPassword } = req.body;
+        const config = await getConfig();
+        
+        // Validate current password
+        if (currentPassword !== config.adminPassword) {
+            return res.status(400).json({ success: false, error: 'Current password is incorrect' });
+        }
+        
+        // Validate new password
+        if (!newPassword || newPassword.length < 4) {
+            return res.status(400).json({ success: false, error: 'New password must be at least 4 characters long' });
+        }
+        
+        if (newPassword === currentPassword) {
+            return res.status(400).json({ success: false, error: 'New password must be different from current password' });
+        }
+        
+        // Update password in config
+        const updatedConfig = await updateConfig({ adminPassword: newPassword });
+        
+        res.json({ success: true, message: 'Password changed successfully' });
+        
+    } catch (error) {
+        console.error('Password change error:', error);
+        res.status(500).json({ success: false, error: 'Failed to change password' });
+    }
+});
+
 // Get redirect URL for the frontend
 app.get('/api/redirect-url', async (req, res) => {
     try {
@@ -334,6 +372,7 @@ app.get('/admin', async (req, res) => {
                         <button class="refresh-btn" onclick="toggleConfig()" style="background: #28a745;">Settings</button>
                     </div>
                     <div>
+                        <button class="refresh-btn" onclick="togglePasswordPanel()" style="background: #ffc107;">Change Password</button>
                         <button class="refresh-btn" onclick="logout()" style="background: #6c757d;">Logout</button>
                     </div>
                 </div>
@@ -350,6 +389,25 @@ app.get('/admin', async (req, res) => {
                     
                     <button onclick="saveConfig()" class="refresh-btn" style="background: #007bff;">Save Changes</button>
                     <button onclick="toggleConfig()" class="refresh-btn" style="background: #6c757d;">Cancel</button>
+                </div>
+            </div>
+            
+            <div id="passwordPanel" class="config-panel" style="display: none;">
+                <h3>Change Password</h3>
+                <div id="passwordError" class="error-msg" style="display: none;"></div>
+                <div id="passwordSuccess" class="success-msg" style="display: none;"></div>
+                <div class="config-form">
+                    <label for="currentPass">Current Password:</label>
+                    <input type="password" id="currentPass" placeholder="Enter current password" style="width: 100%; padding: 8px; margin: 5px 0 15px 0; border: 1px solid #ddd; border-radius: 4px;">
+                    
+                    <label for="newPass">New Password:</label>
+                    <input type="password" id="newPass" placeholder="Enter new password (min 4 chars)" style="width: 100%; padding: 8px; margin: 5px 0 15px 0; border: 1px solid #ddd; border-radius: 4px;">
+                    
+                    <label for="confirmPass">Confirm New Password:</label>
+                    <input type="password" id="confirmPass" placeholder="Confirm new password" style="width: 100%; padding: 8px; margin: 5px 0 15px 0; border: 1px solid #ddd; border-radius: 4px;">
+                    
+                    <button onclick="changePassword()" class="refresh-btn" style="background: #dc3545;">Change Password</button>
+                    <button onclick="togglePasswordPanel()" class="refresh-btn" style="background: #6c757d;">Cancel</button>
                 </div>
             </div>
             
@@ -507,6 +565,94 @@ app.get('/admin', async (req, res) => {
                 localStorage.removeItem('adminToken');
                 authToken = null;
                 showLogin();
+            }
+            
+            function togglePasswordPanel() {
+                const panel = document.getElementById('passwordPanel');
+                const configPanel = document.getElementById('configPanel');
+                
+                if (panel.style.display === 'none') {
+                    // Hide config panel and show password panel
+                    configPanel.style.display = 'none';
+                    panel.style.display = 'block';
+                    
+                    // Clear form
+                    document.getElementById('currentPass').value = '';
+                    document.getElementById('newPass').value = '';
+                    document.getElementById('confirmPass').value = '';
+                    
+                    // Hide messages
+                    document.getElementById('passwordError').style.display = 'none';
+                    document.getElementById('passwordSuccess').style.display = 'none';
+                } else {
+                    panel.style.display = 'none';
+                }
+            }
+            
+            async function changePassword() {
+                const currentPass = document.getElementById('currentPass').value;
+                const newPass = document.getElementById('newPass').value;
+                const confirmPass = document.getElementById('confirmPass').value;
+                
+                // Hide previous messages
+                document.getElementById('passwordError').style.display = 'none';
+                document.getElementById('passwordSuccess').style.display = 'none';
+                
+                // Validation
+                if (!currentPass || !newPass || !confirmPass) {
+                    showPasswordError('Please fill in all fields');
+                    return;
+                }
+                
+                if (newPass.length < 4) {
+                    showPasswordError('New password must be at least 4 characters long');
+                    return;
+                }
+                
+                if (newPass !== confirmPass) {
+                    showPasswordError('New passwords do not match');
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/admin/change-password', {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + authToken
+                        },
+                        body: JSON.stringify({ 
+                            currentPassword: currentPass, 
+                            newPassword: newPass 
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showPasswordSuccess(result.message);
+                        // Clear form after success
+                        setTimeout(() => {
+                            togglePasswordPanel();
+                        }, 2000);
+                    } else {
+                        showPasswordError(result.error || 'Failed to change password');
+                    }
+                } catch (error) {
+                    showPasswordError('Connection error. Please try again.');
+                }
+            }
+            
+            function showPasswordError(message) {
+                const errorDiv = document.getElementById('passwordError');
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+            }
+            
+            function showPasswordSuccess(message) {
+                const successDiv = document.getElementById('passwordSuccess');
+                successDiv.textContent = message;
+                successDiv.style.display = 'block';
             }
             let currentConfig = {};
             
