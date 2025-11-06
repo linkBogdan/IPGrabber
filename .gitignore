@@ -4,3 +4,4 @@ node_modules/
 .DS_Store
 visitor-logs.json
 config.json
+package-lock.json
