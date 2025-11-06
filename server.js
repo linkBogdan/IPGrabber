@@ -440,12 +440,12 @@ app.get('/admin', async (req, res) => {
                     <tbody id="logsTable">
                         <tr><td colspan="5">Loading...</td></tr>
                     </tbody>
-                </div>
+                </table>
             </div>
         </div>
 
         <!-- Login Panel -->
-        <div id="loginPanel" class="login-container" style="display: none;">
+        <div id="loginPanel" class="login-container" style="display: block;">
             <div class="login-box">
                 <h2 style="text-align: center; margin-bottom: 30px;">Admin Login</h2>
                 <div id="loginError" class="error" style="display: none;"></div>
@@ -810,13 +810,6 @@ app.get('/admin', async (req, res) => {
                         '<tr><td colspan="5">Error loading logs</td></tr>';
                 }
             }
-            
-            // Initialize dashboard
-            loadLogs();
-            loadConfig();
-            
-            // Auto-refresh every 30 seconds
-            setInterval(loadLogs, 30000);
         </script>
     </body>
     </html>
