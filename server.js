@@ -67,6 +67,151 @@ async function updateConfig(newConfig) {
     return updatedConfig;
 }
 
+// Detect proxy services and platforms
+function detectProxy(ip, userAgent, referrer, headers) {
+    const proxyInfo = {
+        isProxy: false,
+        platform: 'Direct',
+        proxyType: null,
+        confidence: 'low'
+    };
+
+    // Facebook/Instagram proxy detection
+    if (ip && (
+        ip.includes('2a03:2880') || // Facebook IPv6 ranges
+        ip.includes('31.13.') ||    // Facebook IPv4 ranges
+        ip.includes('157.240.') ||  // Facebook IPv4 ranges
+        ip.includes('173.252.')     // Facebook IPv4 ranges
+    )) {
+        proxyInfo.isProxy = true;
+        proxyInfo.proxyType = 'Facebook/Meta Infrastructure';
+        proxyInfo.confidence = 'high';
+        
+        // Detect specific platform from referrer
+        if (referrer?.includes('instagram')) {
+            proxyInfo.platform = 'Instagram';
+        } else if (referrer?.includes('facebook') || referrer?.includes('m.facebook')) {
+            proxyInfo.platform = 'Facebook';
+        } else if (referrer?.includes('whatsapp')) {
+            proxyInfo.platform = 'WhatsApp';
+        } else {
+            proxyInfo.platform = 'Facebook/Meta';
+        }
+    }
+    
+    // Twitter/X proxy detection
+    else if (referrer?.includes('t.co') || referrer?.includes('twitter.com') || referrer?.includes('x.com')) {
+        proxyInfo.isProxy = true;
+        proxyInfo.platform = 'Twitter/X';
+        proxyInfo.proxyType = 'Twitter Link Wrapper';
+        proxyInfo.confidence = 'high';
+    }
+    
+    // LinkedIn proxy detection
+    else if (referrer?.includes('lnkd.in') || referrer?.includes('linkedin.com')) {
+        proxyInfo.isProxy = true;
+        proxyInfo.platform = 'LinkedIn';
+        proxyInfo.proxyType = 'LinkedIn Link Shortener';
+        proxyInfo.confidence = 'high';
+    }
+    
+    // Discord proxy detection
+    else if (referrer?.includes('discord') || 
+             (userAgent?.includes('Discord') && ip && !ip.startsWith('192.168'))) {
+        proxyInfo.isProxy = true;
+        proxyInfo.platform = 'Discord';
+        proxyInfo.proxyType = 'Discord Link Scanner';
+        proxyInfo.confidence = 'medium';
+    }
+    
+    // TikTok proxy detection
+    else if (referrer?.includes('tiktok') || userAgent?.includes('TikTok') || userAgent?.includes('musical_ly')) {
+        proxyInfo.isProxy = true;
+        proxyInfo.platform = 'TikTok';
+        proxyInfo.proxyType = 'TikTok Link Scanner';
+        proxyInfo.confidence = 'medium';
+    }
+    
+    // WhatsApp detection
+    else if (userAgent?.includes('WhatsApp')) {
+        proxyInfo.isProxy = true;
+        proxyInfo.platform = 'WhatsApp';
+        proxyInfo.proxyType = 'WhatsApp Link Preview';
+        proxyInfo.confidence = 'high';
+    }
+    
+    // Snapchat detection
+    else if (userAgent?.includes('Snapchat')) {
+        proxyInfo.isProxy = false;
+        proxyInfo.platform = 'Snapchat';
+        proxyInfo.proxyType = 'Snapchat In-App Browser';
+        proxyInfo.confidence = 'high';
+    }
+    
+    // Telegram proxy detection
+    else if (referrer?.includes('telegram') || userAgent?.includes('Telegram')) {
+        proxyInfo.isProxy = true;
+        proxyInfo.platform = 'Telegram';
+        proxyInfo.proxyType = 'Telegram Link Preview';
+        proxyInfo.confidence = 'medium';
+    }
+    
+    // Instagram in-app browser detection (even without proxy)
+    else if (userAgent && userAgent.includes('Instagram')) {
+        proxyInfo.isProxy = false; // Not technically a proxy, but not direct browser either
+        proxyInfo.platform = 'Instagram';
+        proxyInfo.proxyType = 'Instagram In-App Browser';
+        proxyInfo.confidence = 'high';
+    }
+    
+    // Facebook in-app browser detection
+    else if (userAgent && (userAgent.includes('FBAN') || userAgent.includes('FBAV') || userAgent.includes('facebookexternalhit'))) {
+        proxyInfo.isProxy = userAgent.includes('facebookexternalhit');
+        proxyInfo.platform = 'Facebook';
+        proxyInfo.proxyType = proxyInfo.isProxy ? 'Facebook External Hit' : 'Facebook In-App Browser';
+        proxyInfo.confidence = 'high';
+    }
+    
+    // Generic proxy/bot detection
+    else if (userAgent && (
+        userAgent.includes('bot') ||
+        userAgent.includes('crawler') ||
+        userAgent.includes('spider') ||
+        userAgent.includes('scraper') ||
+        userAgent.includes('WhatsApp') ||
+        userAgent.includes('Twitterbot')
+    )) {
+        proxyInfo.isProxy = true;
+        proxyInfo.platform = 'Bot/Crawler';
+        proxyInfo.proxyType = 'Web Crawler';
+        proxyInfo.confidence = 'medium';
+    }
+
+    return proxyInfo;
+}
+
+// Extract real IP from proxy headers
+function extractRealIP(headers) {
+    // Try different proxy headers in order of reliability
+    const forwardedFor = headers['x-forwarded-for'];
+    if (forwardedFor) {
+        // X-Forwarded-For can contain multiple IPs, take the first (original client)
+        const ips = forwardedFor.split(',').map(ip => ip.trim());
+        return ips[0];
+    }
+    
+    const realIP = headers['x-real-ip'];
+    if (realIP) return realIP;
+    
+    const cfConnectingIP = headers['cf-connecting-ip']; // Cloudflare
+    if (cfConnectingIP) return cfConnectingIP;
+    
+    const clientIP = headers['x-client-ip'];
+    if (clientIP) return clientIP;
+    
+    return null;
+}
+
 // Get server-side IP geolocation
 async function getServerSideLocation(ip) {
     try {
@@ -97,24 +242,45 @@ async function getServerSideLocation(ip) {
 // Log visitor endpoint
 app.post('/log-visitor', async (req, res) => {
     try {
-        // Get the real IP address
-        const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || 
+        // Get the server IP address (might be proxy)
+        const serverIP = req.headers['x-forwarded-for']?.split(',')[0] || 
                         req.headers['x-real-ip'] || 
                         req.connection.remoteAddress || 
                         req.socket.remoteAddress ||
                         req.ip;
         
-        // Try to get server-side location if client-side failed
+        // Try to extract real client IP from proxy headers
+        const realIP = extractRealIP(req.headers) || serverIP;
+        
+        // Detect if this is coming through a proxy/platform
+        const proxyInfo = detectProxy(
+            serverIP, 
+            req.headers['user-agent'], 
+            req.body.referrer, 
+            req.headers
+        );
+        
+        // Try to get server-side location for both IPs
         let serverLocation = null;
-        if (!req.body.location?.country && clientIP && !clientIP.startsWith('192.168') && !clientIP.startsWith('10.') && clientIP !== '::1') {
-            serverLocation = await getServerSideLocation(clientIP);
+        let realLocation = null;
+        
+        if (!req.body.location?.country && serverIP && !serverIP.startsWith('192.168') && !serverIP.startsWith('10.') && serverIP !== '::1') {
+            serverLocation = await getServerSideLocation(serverIP);
+        }
+        
+        // If we have a different real IP, get location for that too
+        if (realIP !== serverIP && realIP && !realIP.startsWith('192.168') && !realIP.startsWith('10.') && realIP !== '::1') {
+            realLocation = await getServerSideLocation(realIP);
         }
         
         const visitorData = {
             ...req.body,
             serverTimestamp: new Date().toISOString(),
-            serverIP: clientIP,
+            serverIP: serverIP,
+            realIP: realIP !== serverIP ? realIP : null,
             serverLocation: serverLocation,
+            realLocation: realLocation,
+            proxyInfo: proxyInfo,
             headers: {
                 'user-agent': req.headers['user-agent'],
                 'accept-language': req.headers['accept-language'],
@@ -140,7 +306,9 @@ app.post('/log-visitor', async (req, res) => {
         await fs.writeFile(LOG_FILE, JSON.stringify(logs, null, 2));
         
         console.log('New visitor logged:', {
-            ip: visitorData.publicIP || visitorData.serverIP,
+            platform: visitorData.proxyInfo.platform,
+            ip: visitorData.realIP || visitorData.publicIP || visitorData.serverIP,
+            proxyIP: visitorData.proxyInfo.isProxy ? visitorData.serverIP : null,
             location: visitorData.location?.city + ', ' + visitorData.location?.country,
             userAgent: visitorData.userAgent?.substring(0, 50) + '...',
             timestamp: visitorData.timestamp
@@ -353,6 +521,13 @@ app.get('/admin', async (req, res) => {
             .ip { font-family: monospace; font-weight: bold; }
             .location { color: #666; }
             .timestamp { color: #999; font-size: 0.9rem; }
+            .platform { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
+            .platform.direct { background: #e7f3ff; color: #0066cc; }
+            .platform.proxy { background: #fff3cd; color: #856404; }
+            .platform.social { background: #d1ecf1; color: #0c5460; }
+            .platform.inapp { background: #e2e3f1; color: #5a5cad; }
+            .real-ip { color: #28a745; font-weight: bold; }
+            .proxy-ip { color: #ffc107; }
             .refresh-btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; margin: 0 5px; }
             .refresh-btn:hover { background: #5a6fd8; }
             .config-panel { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
@@ -431,6 +606,7 @@ app.get('/admin', async (req, res) => {
                     <thead>
                         <tr>
                             <th>Timestamp</th>
+                            <th>Platform</th>
                             <th>IP Address</th>
                             <th>Location</th>
                             <th>User Agent</th>
@@ -438,7 +614,7 @@ app.get('/admin', async (req, res) => {
                         </tr>
                     </thead>
                     <tbody id="logsTable">
-                        <tr><td colspan="5">Loading...</td></tr>
+                        <tr><td colspan="6">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -762,41 +938,77 @@ app.get('/admin', async (req, res) => {
                     ).length;
                     document.getElementById('todayVisits').textContent = todayCount;
                     
-                    const uniqueIPs = new Set(data.logs.map(log => log.publicIP || log.serverIP)).size;
+                    // Calculate unique IPs (prefer real IP over server IP)
+                    const uniqueIPs = new Set(data.logs.map(log => log.realIP || log.publicIP || log.serverIP)).size;
                     document.getElementById('uniqueIPs').textContent = uniqueIPs;
                     
                     // Update table
                     const tbody = document.getElementById('logsTable');
                     tbody.innerHTML = data.logs.map(log => {
                         const timestamp = new Date(log.timestamp).toLocaleString();
-                        const ip = log.publicIP || log.serverIP || 'Unknown';
                         
-                        // Try to get location from multiple sources
+                        // Handle proxy information
+                        const proxyInfo = log.proxyInfo || { platform: 'Direct', isProxy: false };
+                        const platform = proxyInfo.platform || 'Direct';
+                        const isProxy = proxyInfo.isProxy || false;
+                        
+                        // Determine platform styling
+                        let platformClass = 'direct';
+                        if (isProxy) {
+                            platformClass = ['Instagram', 'Facebook', 'Twitter', 'LinkedIn', 'Discord', 'TikTok', 'Telegram', 'WhatsApp'].includes(platform) ? 'social' : 'proxy';
+                        } else if (['Instagram', 'Facebook', 'Snapchat'].includes(platform)) {
+                            // In-app browsers that aren't proxies but aren't direct either
+                            platformClass = 'inapp';
+                        }
+                        
+                        // Handle IP display (show real IP if available, otherwise show server IP)
+                        let ipDisplay = '';
+                        const realIP = log.realIP;
+                        const serverIP = log.publicIP || log.serverIP || 'Unknown';
+                        
+                        if (realIP && realIP !== serverIP) {
+                            ipDisplay = \`<span class="real-ip" title="Real IP">\${realIP}</span><br><small class="proxy-ip" title="Proxy IP">\${serverIP}</small>\`;
+                        } else {
+                            ipDisplay = \`<span class="ip">\${serverIP}</span>\`;
+                        }
+                        
+                        // Try to get location from multiple sources (prefer real location over proxy location)
                         let location = 'Unknown';
                         const clientLocation = log.location;
+                        const realLocation = log.realLocation;
                         const serverLocation = log.serverLocation;
                         
+                        // Priority: client location > real IP location > server/proxy location
+                        let locationSource = null;
                         if (clientLocation?.city && clientLocation?.country) {
                             location = \`\${clientLocation.city}, \${clientLocation.region ? clientLocation.region + ', ' : ''}\${clientLocation.country}\`;
+                            locationSource = realLocation || serverLocation;
+                        } else if (realLocation?.city && realLocation?.country) {
+                            location = \`\${realLocation.city}, \${realLocation.region ? realLocation.region + ', ' : ''}\${realLocation.country}\`;
+                            locationSource = 'Real Location';
                         } else if (serverLocation?.city && serverLocation?.country) {
                             location = \`\${serverLocation.city}, \${serverLocation.region ? serverLocation.region + ', ' : ''}\${serverLocation.country}\`;
+                            locationSource = isProxy ? 'Proxy Location' : 'Server Location';
                         } else if (clientLocation?.country) {
                             location = clientLocation.country;
+                        } else if (realLocation?.country) {
+                            location = realLocation.country + ' (Real)';
                         } else if (serverLocation?.country) {
-                            location = serverLocation.country;
+                            location = serverLocation.country + (isProxy ? ' (Proxy)' : '');
                         } else if (log.timezone) {
                             location = \`Timezone: \${log.timezone}\`;
                         }
                         
                         const userAgent = log.userAgent ? 
-                            log.userAgent.substring(0, 60) + (log.userAgent.length > 60 ? '...' : '') : 
+                            log.userAgent.substring(0, 50) + (log.userAgent.length > 50 ? '...' : '') : 
                             'Unknown';
                         const referrer = log.referrer || 'Direct';
                         
                         return \`
                             <tr>
                                 <td class="timestamp">\${timestamp}</td>
-                                <td class="ip">\${ip}</td>
+                                <td><span class="platform \${platformClass}" title="\${isProxy ? 'Via ' + (proxyInfo.proxyType || 'Proxy') : 'Direct Access'}">\${platform}</span></td>
+                                <td>\${ipDisplay}</td>
                                 <td class="location">\${location}</td>
                                 <td>\${userAgent}</td>
                                 <td>\${referrer}</td>
@@ -807,7 +1019,7 @@ app.get('/admin', async (req, res) => {
                 } catch (error) {
                     console.error('Error loading logs:', error);
                     document.getElementById('logsTable').innerHTML = 
-                        '<tr><td colspan="5">Error loading logs</td></tr>';
+                        '<tr><td colspan="6">Error loading logs</td></tr>';
                 }
             }
         </script>

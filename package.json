@@ -1,6 +1,6 @@
 {
   "name": "ip-grabber",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Custom IP logging and redirect service",
   "main": "server.js",
   "scripts": {
